@@ -161,6 +161,7 @@ for attempt in 1 2 3; do
     read -r -s -p "Главный пароль WDTT-сервера: " MAIN_PASSWORD; echo
   fi
   OUT="$(init_panel)"
+  [[ "$OUT" == PANEL_PASSWORD=* ]] && say "Пароль панели: ${OUT#PANEL_PASSWORD=}"
   if systemctl is-active --quiet wdtt.service && ! "$BIN_DST" check --config "$CFG" >/dev/null 2>&1; then
     say "Не удалось подтвердить главный пароль через wdtt-server."
     MAIN_PASSWORD=""
