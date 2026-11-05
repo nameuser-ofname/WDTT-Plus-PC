@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"os/signal"
 	"strconv"
@@ -75,7 +77,12 @@ func serve(cfg *Config, cfgPath string) error {
 		_ = srv.Shutdown(shutdown)
 	}()
 	log.Printf("wdtt-admin %s слушает https://%s", version, cfg.Listen)
-	err = srv.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile)
+	certs := &certLoader{cert: cfg.CertFile, key: cfg.KeyFile}
+	if _, err := certs.get(nil); err != nil {
+		return fmt.Errorf("сертификат: %w", err)
+	}
+	srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.get}
+	err = srv.ListenAndServeTLS("", "")
 	if err == http.ErrServerClosed {
 		return nil
 	}
@@ -90,7 +97,6 @@ func secure(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Strict-Transport-Security", "max-age=31536000")
 		h.Set("Cache-Control", "no-store")
 		if r.Method == http.MethodPost {
 			if r.Header.Get("X-Requested-With") != "wdtt-admin" {
@@ -374,4 +380,34 @@ func (a *app) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]any{"logs": out})
+}
+
+// certLoader перечитывает сертификат при изменении файла, чтобы продление
+// Let's Encrypt подхватывалось без перезапуска панели.
+type certLoader struct {
+	mu        sync.Mutex
+	cert, key string
+	loaded    *tls.Certificate
+	mtime     time.Time
+}
+
+func (c *certLoader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, err := os.Stat(c.cert)
+	if err == nil && c.loaded != nil && st.ModTime().Equal(c.mtime) {
+		return c.loaded, nil
+	}
+	pair, lerr := tls.LoadX509KeyPair(c.cert, c.key)
+	if lerr != nil {
+		if c.loaded != nil {
+			return c.loaded, nil
+		}
+		return nil, lerr
+	}
+	c.loaded, c.mtime = &pair, time.Time{}
+	if st != nil {
+		c.mtime = st.ModTime()
+	}
+	return c.loaded, nil
 }

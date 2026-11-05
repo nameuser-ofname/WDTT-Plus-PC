@@ -18,7 +18,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `wdtt-admin %s
 
   wdtt-admin serve    [--config PATH]
-  wdtt-admin init     [--config PATH] --main-password PWD [--panel-password PWD] [--listen ADDR] [--host NAME[,NAME]] [--wdtt-config-dir DIR]
+  wdtt-admin init     [--config PATH] --main-password PWD [--panel-password PWD] [--listen ADDR] [--cert F --key F] [--host NAME[,NAME]] [--wdtt-config-dir DIR]
   wdtt-admin passwd   [--config PATH] [--panel-password PWD]
   wdtt-admin check    [--config PATH]
   wdtt-admin version
@@ -71,6 +71,8 @@ func cmdInit(args []string) error {
 	panelPwd := fs.String("panel-password", "", "пароль входа в панель (если пусто — сгенерируется)")
 	listen := fs.String("listen", "0.0.0.0:8443", "адрес прослушивания")
 	hosts := fs.String("host", "localhost", "имена/IP для сертификата, через запятую")
+	certArg := fs.String("cert", "", "готовый сертификат (fullchain.pem); без него создаётся самоподписанный")
+	keyArg := fs.String("key", "", "приватный ключ к --cert")
 	wdttDir := fs.String("wdtt-config-dir", "/etc/wdtt", "каталог конфигурации wdtt-server")
 	fs.Parse(args)
 	if strings.TrimSpace(*mainPwd) == "" {
@@ -88,7 +90,12 @@ func cmdInit(args []string) error {
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = randomString(32)
 	}
-	if cfg.CertFile == "" || cfg.KeyFile == "" {
+	if *certArg != "" || *keyArg != "" {
+		if *certArg == "" || *keyArg == "" {
+			return fmt.Errorf("--cert и --key указываются вместе")
+		}
+		cfg.CertFile, cfg.KeyFile = *certArg, *keyArg
+	} else if cfg.CertFile == "" || cfg.KeyFile == "" {
 		cfg.CertFile, cfg.KeyFile = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
 		if err := generateSelfSigned(cfg.CertFile, cfg.KeyFile, append(strings.Split(*hosts, ","), "localhost", "127.0.0.1")); err != nil {
 			return err

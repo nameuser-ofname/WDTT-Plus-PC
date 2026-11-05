@@ -15,6 +15,9 @@ MAIN_PASSWORD=""
 PANEL_PASSWORD=""
 WDTT_DIR=/etc/wdtt
 ANSWERS=""
+LE_EMAIL=""
+CERT_FILE=""
+KEY_FILE=""
 UNINSTALL=0
 
 die() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
@@ -28,6 +31,8 @@ usage() {
   --main-password PWD   главный пароль WDTT (если не указан — берётся из $WDTT_DIR/passwords.json или спрашивается)
   --panel-password PWD  пароль входа в панель (если не указан — генерируется)
   --wdtt-dir DIR        каталог конфигурации wdtt-server (по умолчанию $WDTT_DIR)
+  --letsencrypt EMAIL   получить настоящий сертификат Let's Encrypt для --host (нужен домен и свободный TCP 80)
+  --cert FILE --key FILE  использовать свой сертификат (fullchain + ключ)
   --answers FILE        файл с MAIN_PASSWORD=, PANEL_PASSWORD=, PORT=, HOST= (удаляется после чтения)
   --uninstall           удалить панель (данные WDTT не затрагиваются)
 USAGE
@@ -40,6 +45,9 @@ while [[ $# -gt 0 ]]; do
     --main-password) MAIN_PASSWORD="$2"; shift 2 ;;
     --panel-password) PANEL_PASSWORD="$2"; shift 2 ;;
     --wdtt-dir) WDTT_DIR="$2"; shift 2 ;;
+    --letsencrypt) LE_EMAIL="$2"; shift 2 ;;
+    --cert) CERT_FILE="$2"; shift 2 ;;
+    --key) KEY_FILE="$2"; shift 2 ;;
     --answers) ANSWERS="$2"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -59,6 +67,7 @@ if [[ -n "$ANSWERS" ]]; then
       PANEL_PASSWORD) PANEL_PASSWORD="$v" ;;
       PORT) [[ -n "$v" ]] && PORT="$v" ;;
       HOST) HOST="$v" ;;
+      LE_EMAIL) LE_EMAIL="$v" ;;
     esac
   done < "$ANSWERS"
   shred -u "$ANSWERS" 2>/dev/null || rm -f "$ANSWERS"
@@ -116,9 +125,32 @@ if [[ -z "$MAIN_PASSWORD" && -r "$WDTT_DIR/passwords.json" ]]; then
   [[ -n "$MAIN_PASSWORD" ]] && say "Главный пароль найден в $WDTT_DIR/passwords.json"
 fi
 
+# --- сертификат Let's Encrypt (по желанию) ---
+if [[ -n "$LE_EMAIL" ]]; then
+  LE_DOMAIN="${HOST%%,*}"
+  [[ "$LE_DOMAIN" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die "Для Let's Encrypt нужен домен в --host (сейчас: $LE_DOMAIN)."
+  if ! command -v certbot >/dev/null; then
+    say "Устанавливаю certbot…"
+    if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot >/dev/null
+    elif command -v dnf >/dev/null; then dnf install -y -q certbot >/dev/null
+    elif command -v yum >/dev/null; then yum install -y -q certbot >/dev/null
+    else die "Не удалось установить certbot автоматически — поставьте его вручную или укажите --cert/--key."; fi
+  fi
+  say "Получаю сертификат для $LE_DOMAIN (certbot standalone, порт 80)…"
+  certbot certonly --standalone --non-interactive --agree-tos --keep-until-expiring \
+    -m "$LE_EMAIL" -d "$LE_DOMAIN" \
+    || die "certbot не смог выпустить сертификат. Проверьте: A-запись $LE_DOMAIN указывает на этот сервер, TCP 80 свободен и открыт (временно остановите то, что его занимает)."
+  CERT_FILE="/etc/letsencrypt/live/$LE_DOMAIN/fullchain.pem"
+  KEY_FILE="/etc/letsencrypt/live/$LE_DOMAIN/privkey.pem"
+fi
+if [[ -n "$CERT_FILE" || -n "$KEY_FILE" ]]; then
+  [[ -r "$CERT_FILE" && -r "$KEY_FILE" ]] || die "Не читаются файлы сертификата: $CERT_FILE / $KEY_FILE"
+fi
+
 init_panel() {
   local args=(init --config "$CFG" --main-password "$MAIN_PASSWORD" --listen "0.0.0.0:$PORT" --host "$HOST" --wdtt-config-dir "$WDTT_DIR")
   [[ -n "$PANEL_PASSWORD" ]] && args+=(--panel-password "$PANEL_PASSWORD")
+  [[ -n "$CERT_FILE" ]] && args+=(--cert "$CERT_FILE" --key "$KEY_FILE")
   "$BIN_DST" "${args[@]}"
 }
 
@@ -157,6 +189,7 @@ PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=$CFG_DIR
+ReadOnlyPaths=/etc/letsencrypt
 
 [Install]
 WantedBy=multi-user.target
@@ -188,7 +221,7 @@ elif [[ -n "$PANEL_PASSWORD" ]]; then
 else
   echo " Пароль: прежний (панель уже была установлена)"
 fi
-echo " Сертификат самоподписанный — браузер покажет предупреждение, это нормально."
+if [[ -n "$CERT_FILE" ]]; then echo " Сертификат: $CERT_FILE"; else echo " Сертификат самоподписанный — браузеры (особенно Chrome с HSTS) могут не пускать; используйте --letsencrypt EMAIL."; fi
 echo " Управление:  systemctl status wdtt-admin   |   journalctl -u wdtt-admin -f"
 echo " Сброс пароля: wdtt-admin passwd"
 echo "══════════════════════════════════════════════"
