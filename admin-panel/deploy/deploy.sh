@@ -75,6 +75,15 @@ fi
 
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "Некорректный порт: $PORT"
 
+# Освобождаем порт от прежней копии панели и ищем свободный, если он занят чужим процессом.
+systemctl stop wdtt-admin.service 2>/dev/null || true
+port_busy() { ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"; }
+if command -v ss >/dev/null && port_busy "$PORT"; then
+  ORIG_PORT=$PORT
+  while port_busy "$PORT" && [[ $PORT -lt 65535 ]]; do PORT=$((PORT + 1)); done
+  say "Порт $ORIG_PORT занят другой программой, использую $PORT (задать свой: --port N)."
+fi
+
 # --- бинарник под архитектуру ---
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
